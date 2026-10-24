@@ -33,7 +33,8 @@ export const GHANA_FEED_REGISTRY = [
 ];
 
 export class GhanaScraperEngine {
-  constructor({feeds = GHANA_FEED_REGISTRY, stateDir = process.env.GHANA_STATE_DIR, transport} = {}) {
+  constructor({feeds = GHANA_FEED_REGISTRY, stateDir = process.env.GHANA_STATE_DIR, transport, persist = true} = {}) {
+    this.persist = persist;
     this.feeds = feeds;
     this.transport = transport || new FeedTransport({allowedHosts: feeds.flatMap(f => {const host=new URL(f.url).hostname;return [host, host.startsWith('www.') ? host.slice(4) : `www.${host}`];})});
     this.feedCache = {};
@@ -59,8 +60,8 @@ export class GhanaScraperEngine {
       zeroQuotaTokensUsed: 0
     };
     try {
-      const saved = JSON.parse(readFileSync(this.stateFile, 'utf8'));
-      if (saved.version === 1 && Array.isArray(saved.signals)) {
+      const saved = this.persist ? JSON.parse(readFileSync(this.stateFile, 'utf8')) : null;
+      if (saved?.version === 1 && Array.isArray(saved.signals)) {
         this.cachedSignals = saved.signals.slice(0, 2000);
         this.lastScrapedAt = saved.lastScrapedAt;
         this.feedHealth = saved.feedHealth || {};
@@ -70,6 +71,7 @@ export class GhanaScraperEngine {
   }
 
   saveSnapshot() {
+    if (!this.persist) return;
     mkdirSync(resolve(this.stateFile, '..'), { recursive: true });
     const temp = this.stateFile + `.${process.pid}.tmp`;
     writeFileSync(temp, JSON.stringify({ version: 1, lastScrapedAt: this.lastScrapedAt, signals: this.cachedSignals, feedHealth:this.feedHealth, feedCache:this.feedCache }));

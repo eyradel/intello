@@ -3,7 +3,7 @@ export async function loadRegionalCoverage(hours, {signal, fetchImpl=fetch, wait
   for(let attempt=0;attempt<3;attempt++){
     signal?.throwIfAborted();
     try {
-      const timeout=AbortSignal.timeout(8000);
+      const timeout=AbortSignal.timeout(25000);
       const response=await fetchImpl(`/api/v1/coverage/regions?hours=${hours}`,{signal:signal?AbortSignal.any([signal,timeout]):timeout,cache:'no-store'});
       if(!response.ok)throw new Error(`Coverage service returned HTTP ${response.status}`);
       const data=await response.json();

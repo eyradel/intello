@@ -187,6 +187,12 @@ A production PostGIS SQL schema scaffold is provided in `src/features/system/Sys
 
 ## intello: run the full local application
 
+### Vercel hosting
+
+Deploy this repository with the Vite preset, build command `npm run build`, and output directory `dist`. Keep `api/intelligence.js` and `vercel.json` in the project root. The configuration routes `/api/v1/*` to a Node function; deploying only `dist` will leave these routes unavailable. Redeploy after pulling this change.
+
+Vercel collection is request-driven and uses two direct publisher feeds. The function has a 60-second limit, a 15-minute warm-instance collection interval, and an ephemeral memory cache. It does not claim durable history or continuous background collection. A persistent datastore and scheduled worker are needed for those capabilities. The local development collector retains its existing disk storage and timer.
+
 Install dependencies with `npm ci`. For development use `npm run dev` at http://localhost:5174. For a built local preview run `npm run build` followed by `npm start`. Both modes register the local collection endpoints and poll accessible public feeds every 15 minutes while running.
 
 The `dist` directory alone is a static frontend. GitHub Pages or another static-only host cannot execute `/api/v1` endpoints. A deployed application needs a Node runtime or a separately deployed backend with matching reverse-proxy routes. `npm start` serves a local Vite preview; it is not a hardened internet-facing production server.
