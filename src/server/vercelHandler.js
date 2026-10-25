@@ -1,4 +1,5 @@
 import { analyzeTargetAwareSentiment, resolveEntitiesFromText } from '../services/intelligence/localThinkingEngine.js';
+import { buildPublicFigureAnalytics } from '../services/intelligence/publicFigureAnalytics.js';
 
 export function createVercelHandler(engine) {
   let lastCheck = 0;
@@ -38,10 +39,11 @@ export function createVercelHandler(engine) {
         const targetEntity = entities[0]?.name || null;
         return send(200, { text, entities, targetEntity, sentiment: analyzeTargetAwareSentiment(text, targetEntity), engineStatus: 'LOCAL_HEURISTICS_UNVALIDATED' });
       }
-      const supported = ['coverage/regions', 'scraper/status', 'scraper/refresh', 'live-signals', 'signals', 'trending-entities', 'thinking/national-brief', 'thinking/narratives', 'thinking/coordination', 'politicians/search'];
+      const supported = ['public-figures/coverage', 'coverage/regions', 'scraper/status', 'scraper/refresh', 'live-signals', 'signals', 'trending-entities', 'thinking/national-brief', 'thinking/narratives', 'thinking/coordination', 'politicians/search'];
       if (!supported.includes(route)) return send(404, { error: 'Unknown service route', route });
       if (req.method === 'POST' && route !== 'scraper/refresh') return send(405, { error: 'Use GET for this route' });
       await ensureCollection();
+      if (route === 'public-figures/coverage') return send(200, buildPublicFigureAnalytics(engine.cachedSignals, { hours: Math.min(168, Math.max(1, Number(url.searchParams.get('hours')) || 168)) }));
       if (route === 'coverage/regions') return send(200, engine.getRegionalSummaries(Math.min(168, Math.max(1, Number(url.searchParams.get('hours')) || 24))));
       if (route === 'scraper/status') return send(200, { ...engine.getScraperSnapshot(), hosting: { runtime: 'vercel-function', storage: 'ephemeral-memory', collection: 'request-driven', durableRetention: false } });
       if (route === 'scraper/refresh') return send(200, { success: !engine.lastError, snapshot: engine.getScraperSnapshot(), message: 'Collection checked; source cooldowns apply' });

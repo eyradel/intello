@@ -1,4 +1,6 @@
+import { buildPublicFigureAnalytics } from '../intelligence/publicFigureAnalytics.js';
 import { FeedTransport } from './feedTransport.js';
+import { AUTHORIZED_SOCIAL_FEEDS } from './socialSources.js';
 import { cleanText, parseFeed, ghanaRelevance, deduplicateArticles } from './feedParsing.js';
 import { readFileSync, mkdirSync, writeFileSync, renameSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -19,6 +21,7 @@ import {
 
 // Configured public feeds; availability and report accuracy are not guaranteed
 export const GHANA_FEED_REGISTRY = [
+  ...AUTHORIZED_SOCIAL_FEEDS,
   { id: 'google-ghana-top', name: 'Google News Ghana (National)', enabled: false, disabledReason: 'Robots policy disallows collection; use direct publishers', url: 'https://news.google.com/rss?hl=en-GH&gl=GH&ceid=GH:en', reliability: 98 },
   { id: 'google-ghana-politics', name: 'Ghana Politics Wire', enabled: false, disabledReason: 'Robots policy disallows collection; use direct publishers', url: 'https://news.google.com/rss/search?q=Ghana+(politics+OR+election+OR+parliament)&hl=en-GH&gl=GH&ceid=GH:en', reliability: 96 },
   { id: 'google-ghana-elections', name: 'Electoral & Governance Wire', enabled: false, disabledReason: 'Robots policy disallows collection; use direct publishers', url: 'https://news.google.com/rss/search?q=Ghana+(Mahama+OR+Bawumia+OR+Akufo-Addo+OR+NPP+OR+NDC)&hl=en-GH&gl=GH&ceid=GH:en', reliability: 95 },
@@ -217,6 +220,10 @@ export class GhanaScraperEngine {
 
         const sig = {
           id: item.stableId,
+          media: item.media || [],
+          mediaType: item.mediaType || 'news',
+          socialPlatform: item.socialPlatform || null,
+          collectionMethod: item.collectionMethod || 'publisher-feed',
           provenance: item.provenance,
           publisher: item.publisher,
           feedId: item.feedId,
@@ -271,7 +278,7 @@ export class GhanaScraperEngine {
 
       if (enrichedSignals.length) {
         const retained = new Map(this.cachedSignals.filter(s=>ghanaRelevance({title:s.headline,description:s.text,feedId:s.feedId || (s.url?.includes('news.google.com')?'google-legacy':'legacy')}).accepted).map(s => [s.id, s]));
-        const titleKey=s=>`${s.timestamp?.slice(0,10)}:${s.headline?.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ')}`;
+        const titleKey=s=>`${s.mediaType || 'news'}:${s.socialPlatform || ''}:${s.timestamp?.slice(0,10)}:${s.headline?.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ')}`;
         const priorTitles=new Map([...retained.values()].map(s=>[titleKey(s),s.id]));
         for (const signal of enrichedSignals) {
           const id=retained.has(signal.id)?signal.id:priorTitles.get(titleKey(signal)) || signal.id;
@@ -330,220 +337,16 @@ export class GhanaScraperEngine {
   }
 
   async searchPoliticianOnInternet(rawQuery) {
-    if (!rawQuery || rawQuery.trim().length === 0) return null;
-    const cleanQuery = rawQuery.trim();
-    const queryLow = cleanQuery.toLowerCase();
-
-    // 1. Identify canonical identity & role mapping
-    let canonicalName = cleanQuery;
-    let role = 'Ghanaian Political Figure & Public Official';
-    let party = 'Unknown';
-    let affiliation = 'Public Administration of Ghana';
-    let initials = cleanQuery.split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase() || 'GH';
-    let defaultId = `pol-custom-${cleanQuery.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
-
-    {
-      // Check known entity registry
-      const matched = resolveEntitiesFromText(cleanQuery);
-      if (matched.length > 0) {
-        canonicalName = matched[0].name;
-        role = matched[0].role;
-        party = matched[0].party;
-        affiliation = matched[0].party === 'NPP' ? 'New Patriotic Party' : matched[0].party === 'NDC' ? 'National Democratic Congress' : 'Independent / Civic';
-        initials = canonicalName.split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase();
-        defaultId = `pol-${matched[0].id || canonicalName.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
-      }
-    }
-
-    // 2. Dual-query live search across Google News Ghana wires for maximum live freshness
-    const queryUrls = [
-      `https://news.google.com/rss/search?q=${encodeURIComponent(canonicalName + ' Ghana')}&hl=en-GH&gl=GH&ceid=GH:en`,
-      `https://news.google.com/rss/search?q=${encodeURIComponent('Ghana ' + cleanQuery)}&hl=en-GH&gl=GH&ceid=GH:en`
-    ];
-
-    const feedPromises = queryUrls.map((url, i) => 
-      this.fetchSingleFeed({ id: `live-pol-${i}`, url, name: 'Google News Wire' })
-    );
-
-    const feedResults = await Promise.allSettled(feedPromises);
-    const combinedArticles = [];
-    feedResults.forEach(r => {
-      if (r.status === 'fulfilled' && Array.isArray(r.value)) {
-        combinedArticles.push(...r.value);
-      }
-    });
-
-    // Also include matching articles from currently cached live feed
-    if (Array.isArray(this.cachedSignals)) {
-      this.cachedSignals.forEach(s => {
-        const full = `${s.headline} ${s.text}`.toLowerCase();
-        if (full.includes(canonicalName.toLowerCase()) || full.includes(cleanQuery.toLowerCase())) {
-          combinedArticles.push({
-            title: s.headline,
-            description: s.text,
-            link: s.url,
-            pubDate: new Date(s.timestamp || Date.now()),
-            source: s.source
-          });
-        }
-      });
-    }
-
-    // 3. Deduplicate by title & STRICTLY SORT BY PUBDATE DESCENDING (Latest first)
-    const seen = new Set();
-    const uniqueArticles = [];
-    for (const art of combinedArticles) {
-      const norm = (art.title || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      if (norm.length > 10 && !seen.has(norm)) {
-        seen.add(norm);
-        uniqueArticles.push(art);
-      }
-    }
-
-    uniqueArticles.sort((a, b) => new Date(b.pubDate).getTime() - new Date(a.pubDate).getTime());
-
-    // 4. Local thinking & sentiment analysis on the freshest real articles
-    let totalScore = 0;
-    let posCount = 0;
-    let neuCount = 0;
-    let negCount = 0;
-    const extractedPoints = [];
-    const positiveIssues = [];
-    const negativeIssues = [];
-    const recentArticlesList = [];
-    const sourceTally = new Set();
-    const regionMentions = {};
-
-    const formatRelativeTime = (dateObj) => {
-      const now = Date.now();
-      const diffMs = now - dateObj.getTime();
-      const diffHours = Math.floor(diffMs / 3600000);
-      if (diffHours < 1) return 'Just now (Live Wire)';
-      if (diffHours === 1) return '1 hour ago';
-      if (diffHours < 24) return `${diffHours} hours ago`;
-      const diffDays = Math.floor(diffHours / 24);
-      if (diffDays === 1) return 'Yesterday';
-      if (diffDays < 7) return `${diffDays} days ago`;
-      return dateObj.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
-    };
-
-    for (const art of uniqueArticles.slice(0, 30)) {
-      const fullText = (art.title + ' ' + (art.description || '')).trim();
-      const sent = analyzeTargetAwareSentiment(fullText, canonicalName);
-      totalScore += sent.score;
-
-      // Extract publisher from title (e.g. "... - Daily Graphic" -> "Daily Graphic")
-      const pubMatch = art.title.match(/\s+-\s+([^-]+)$/);
-      const cleanHeadline = art.title.replace(/\s+-\s+[^-]+$/, '').trim();
-      const publisherName = pubMatch ? pubMatch[1].trim() : (art.source || 'Ghana News Wire');
-      sourceTally.add(publisherName);
-
-      if (sent.score >= 10) posCount++;
-      else if (sent.score <= -10) negCount++;
-      else neuCount++;
-
-      // Infer region
-      const { regionId } = this.inferRegionFromText(fullText);
-      if (regionId) regionMentions[regionId] = (regionMentions[regionId] || 0) + 1;
-
-      const relTime = formatRelativeTime(new Date(art.pubDate));
-
-      // Extract authentic point directly from headline
-      if (cleanHeadline.length > 20) {
-        const pointText = `${cleanHeadline} [${publisherName} · ${relTime}]`;
-        if (extractedPoints.length < 6 && !extractedPoints.some(p => p.includes(cleanHeadline.substring(0, 25)))) {
-          extractedPoints.push(pointText);
-        }
-      }
-
-      if (sent.score > 12) {
-        if (!positiveIssues.some(p => p.includes(cleanHeadline.substring(0, 20)))) {
-          positiveIssues.push(`${cleanHeadline} (${publisherName})`);
-        }
-      } else if (sent.score < -12) {
-        if (!negativeIssues.some(n => n.includes(cleanHeadline.substring(0, 20)))) {
-          negativeIssues.push(`${cleanHeadline} (${publisherName})`);
-        }
-      }
-
-      if (recentArticlesList.length < 10) {
-        recentArticlesList.push({
-          headline: cleanHeadline,
-          source: publisherName,
-          url: art.link,
-          time: art.pubDate ? new Date(art.pubDate).toISOString() : new Date().toISOString(),
-          relativeTime: relTime,
-          sentiment: sent.score
-        });
-      }
-    }
-
-    const totalSample = uniqueArticles.length || 1;
-    const posPct = Math.round((posCount / Math.max(1, posCount + neuCount + negCount)) * 100);
-    const negPct = Math.round((negCount / Math.max(1, posCount + neuCount + negCount)) * 100);
-    const neuPct = Math.max(0, 100 - posPct - negPct);
-    const nationalSentiment = uniqueArticles.length > 0 ? Math.round(totalScore / Math.min(30, uniqueArticles.length)) : null;
-
-    // Popularity score calculation (0 - 100 scale)
-    const mentionDensity = Math.min(65, uniqueArticles.length * 2.8);
-    const positiveFactor = Math.max(0, (nationalSentiment + 50) * 0.35);
-    const popularityScore = null; // No representative popularity measurement exists.
-
-    // Latest breaking event derived directly from the #1 freshest article
-    const freshestArticle = recentArticlesList[0];
-    const topTopic = freshestArticle ? freshestArticle.headline : 'Government Economic Strategy';
-
-    // AI Summary generated locally from real scraped news topics
-    const localAiSummary = `Real-time public OSINT scan across ${uniqueArticles.length} recent Ghanaian news articles (sorted by recency). Current media coverage is heavily centered on "${topTopic}", with reports streaming in from ${[...sourceTally].slice(0, 4).join(', ')}. Heuristic news tone registers at ${nationalSentiment > 0 ? '+' : ''}${nationalSentiment} with ${posPct}% positive discussion share and ${negPct}% scrutiny/criticism.`;
-
-    return {
-      id: defaultId,
-      name: canonicalName,
-      searchQuery: cleanQuery,
-      initials,
-      role,
-      party,
-      affiliation,
-      aliases: [cleanQuery, canonicalName],
-      nationalSentiment,
-      popularityScore,
-      popularityLevel: popularityScore >= 75 ? 'HIGH MEDIA VISIBILITY' : popularityScore >= 50 ? 'MODERATE VISIBILITY' : 'EMERGING',
-      positivePct: posPct,
-      neutralPct: neuPct,
-      negativePct: negPct,
-      movement24h: null,
-      movement7d: null,
-      movement30d: null,
-      mentions: String(uniqueArticles.length),
-      mentionCount: uniqueArticles.length,
-      velocity: 'Baseline not established',
-      points: extractedPoints.slice(0, 6),
-      topPositiveIssues: positiveIssues.slice(0, 4),
-      topNegativeIssues: negativeIssues.slice(0, 4),
-      dominantTopics: extractedPoints.slice(0, 4).map(p => p.split(' [')[0]),
-      recentArticles: recentArticlesList,
-      highestDiscussionRegions: Object.keys(regionMentions),
-      regionalBreakdown: regionMentions,
-      confidence: null,
-      sourceDistribution: {
-        news: uniqueArticles.length ? 100 : 0,
-        social: 0,
-        broadcast: 0,
-        forums: 0
-      },
-      aiSummary: localAiSummary,
-      events: recentArticlesList.slice(0, 4).map(a => ({
-        date: a.relativeTime,
-        title: a.headline,
-        impact: `${a.sentiment > 0 ? '+' : ''}${(a.sentiment * 0.1).toFixed(1)} pts`
-      })),
-      sentimentHistory: [],
-      isLiveScraped: true,
-      scrapedAt: new Date().toISOString(),
-      liveArticlesCount: uniqueArticles.length,
-      freshnessLabel: 'PUBLIC FEED RESULTS — CHECK ARTICLE DATES',
-      quotaUsed: '0 Tokens (Direct Google News & Press Wire Scraping + Local Thinking)'
-    };
+    const query=String(rawQuery || '').trim().toLowerCase();
+    if(!query)return null;
+    const report=buildPublicFigureAnalytics(this.cachedSignals);
+    const figure=report.figures.find(f=>f.name.toLowerCase().includes(query) || f.aliases.some(a=>a.toLowerCase()===query));
+    if(!figure)return {error:'No reference public figure matched. Add a verified identity to expand coverage.'};
+    return {...figure, mentionCount:figure.newsArticles,mentions:String(figure.newsArticles),popularityScore:null,nationalSentiment:null,
+      liveArticlesCount:figure.newsArticles,isLiveScraped:true,scrapedAt:this.lastScrapedAt,
+      recentArticles:figure.evidence.map(e=>({headline:e.headline,source:e.source,url:e.url,time:e.timestamp})),
+      aiSummary:`${figure.newsArticles} collected news articles and ${figure.socialPosts} social posts in the past seven days. This is media visibility, not measured public popularity. Party affiliation is an unverified reference.`,
+      methodology:report.methodology};
   }
 
   getScraperSnapshot() {

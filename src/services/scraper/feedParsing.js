@@ -36,7 +36,11 @@ export function parseFeed(xml, feed, now=Date.now()) {
     if(publicationDateKnown && parsed>now+15*60000){rejected.futureDate++;continue;}
     if(publicationDateKnown && parsed<now-7*86400000){rejected.old++;continue;}
     const publisher=cleanText(entry.source || root.title || feed.name);
-    items.push({title,description:cleanText(entry.description || entry.summary || entry.encoded || entry.content).slice(0,1200),link,
+    const media = [...list(entry.enclosure), ...list(entry.content), ...list(entry.thumbnail), ...list(entry.group?.content), ...list(entry.group?.thumbnail)]
+      .filter(node => node && typeof node === 'object' && (node['@_url'] || node['@_href']))
+      .map(node => ({ url: canonicalUrl(node['@_url'] || node['@_href'], feed.url), type: node['@_type'] || node['@_medium'] || 'unspecified', title: cleanText(node.title || '') }))
+      .filter(item => item.url && /^(image|video|audio)(\/|$)/i.test(item.type)).slice(0, 20);
+    items.push({title,media,mediaType:feed.isAuthorizedSocialFeed?'social':'news',socialPlatform:feed.socialPlatform || null,collectionMethod:feed.isAuthorizedSocialFeed?'authorized-feed':'publisher-feed',description:cleanText(entry.description || entry.summary || entry.encoded || entry.content).slice(0,1200),link,
       pubDate:new Date(publicationDateKnown?parsed:now),publicationDateKnown,publisher,publisherUrl:entry.source?.['@_url']?canonicalUrl(entry.source['@_url'],feed.url):null,
       source:publisher || feed.name,feedId:feed.id,feedName:feed.name,feedUrl:feed.url,ingestedAt:new Date(now).toISOString()});
   }
@@ -47,7 +51,7 @@ export function ghanaRelevance(item) {
   const hasCountry=/\bghana(?:ian|ians)?\b|\bgalamsey\b|\bdumsor\b|\bcedi\b|\bmahama\b|\bbawumia\b|\bakufo[ -]addo\b/i.test(text);
   const place=inferGeography(text).regionMatches.length>0;
   // A domestic publisher supplies geographical context; Google query labels do not.
-  const domestic=!String(item.feedId).startsWith('google-') && !String(item.feedId).startsWith('live-pol-');
+  const domestic=item.mediaType!=='social' && !String(item.feedId).startsWith('google-') && !String(item.feedId).startsWith('live-pol-');
   return {accepted:hasCountry||place||domestic,reason:hasCountry?'explicit-country-context':place?'place-mention':domestic?'domestic-source':'no-ghana-context'};
 }
 export function deduplicateArticles(items) {
@@ -55,7 +59,7 @@ export function deduplicateArticles(items) {
   for(const item of items){
     const title=item.title.toLocaleLowerCase('en').normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu,' ').trim();
     const day=item.publicationDateKnown?item.pubDate.toISOString().slice(0,10):'undated';
-    const key=`${day}:${title}`;
+    const key=`${item.mediaType || 'news'}:${item.socialPlatform || ''}:${day}:${title}`;
     const existing=urls.get(item.link)||titles.get(key);
     if(existing){duplicates++;existing.provenance.push({feedId:item.feedId,feedUrl:item.feedUrl,url:item.link,publisher:item.publisher});continue;}
     const article={...item,provenance:[{feedId:item.feedId,feedUrl:item.feedUrl,url:item.link,publisher:item.publisher}]};

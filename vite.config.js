@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { ghanaScraper } from './src/services/scraper/ghanaScraperEngine.js';
+import { buildPublicFigureAnalytics } from './src/services/intelligence/publicFigureAnalytics.js';
 import {
   analyzeTargetAwareSentiment,
   resolveEntitiesFromText,
@@ -43,6 +44,13 @@ function ghanaIntelligencePlugin() {
         }
 
         const url = req.url || '';
+
+        if (url.split('?')[0] === '/api/v1/public-figures/coverage') {
+          res.setHeader('Content-Type', 'application/json');
+          const hours = Math.min(168, Math.max(1, Number(new URL(url, 'http://localhost').searchParams.get('hours')) || 168));
+          res.end(JSON.stringify(buildPublicFigureAnalytics(ghanaScraper.cachedSignals, { hours })));
+          return;
+        }
 
         if (url.split('?')[0] === '/api/v1/coverage/regions') {
           res.setHeader('Content-Type', 'application/json');
