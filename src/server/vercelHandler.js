@@ -1,3 +1,4 @@
+import { searchEvidence, SearchInputError } from '../services/search/evidenceIndex.js';
 import { analyzeTargetAwareSentiment, resolveEntitiesFromText } from '../services/intelligence/localThinkingEngine.js';
 import { buildPublicFigureAnalytics } from '../services/intelligence/publicFigureAnalytics.js';
 
@@ -39,10 +40,11 @@ export function createVercelHandler(engine) {
         const targetEntity = entities[0]?.name || null;
         return send(200, { text, entities, targetEntity, sentiment: analyzeTargetAwareSentiment(text, targetEntity), engineStatus: 'LOCAL_HEURISTICS_UNVALIDATED' });
       }
-      const supported = ['public-figures/coverage', 'coverage/regions', 'scraper/status', 'scraper/refresh', 'live-signals', 'signals', 'trending-entities', 'thinking/national-brief', 'thinking/narratives', 'thinking/coordination', 'politicians/search'];
+      const supported = ['evidence/search', 'public-figures/coverage', 'coverage/regions', 'scraper/status', 'scraper/refresh', 'live-signals', 'signals', 'trending-entities', 'thinking/national-brief', 'thinking/narratives', 'thinking/coordination', 'politicians/search'];
       if (!supported.includes(route)) return send(404, { error: 'Unknown service route', route });
       if (req.method === 'POST' && route !== 'scraper/refresh') return send(405, { error: 'Use GET for this route' });
       await ensureCollection();
+      if (route === 'evidence/search') return send(200, searchEvidence(engine, Object.fromEntries(url.searchParams)));
       if (route === 'public-figures/coverage') return send(200, buildPublicFigureAnalytics(engine.cachedSignals, { hours: Math.min(168, Math.max(1, Number(url.searchParams.get('hours')) || 168)) }));
       if (route === 'coverage/regions') return send(200, engine.getRegionalSummaries(Math.min(168, Math.max(1, Number(url.searchParams.get('hours')) || 24))));
       if (route === 'scraper/status') return send(200, { ...engine.getScraperSnapshot(), hosting: { runtime: 'vercel-function', storage: 'ephemeral-memory', collection: 'request-driven', durableRetention: false } });
@@ -54,7 +56,7 @@ export function createVercelHandler(engine) {
       if (route === 'thinking/coordination') return send(200, engine.cachedCoordination);
       if (route === 'politicians/search') return send(200, await engine.searchPoliticianOnInternet((url.searchParams.get('query') || url.searchParams.get('q') || '').slice(0, 150)));
     } catch (error) {
-      return send(error instanceof SyntaxError ? 400 : 503, { error: error instanceof SyntaxError ? 'Invalid JSON body' : 'Collection service could not complete the request', detail: error.message });
+      return send(error instanceof SyntaxError || error instanceof SearchInputError ? 400 : 503, { error: error instanceof SyntaxError ? 'Invalid JSON body' : 'Collection service could not complete the request', detail: error.message });
     }
   };
 }

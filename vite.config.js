@@ -1,3 +1,4 @@
+import { searchEvidence, SearchInputError } from './src/services/search/evidenceIndex.js';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
@@ -44,6 +45,14 @@ function ghanaIntelligencePlugin() {
         }
 
         const url = req.url || '';
+        if (url.split('?')[0] === '/api/v1/evidence/search') {
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Cache-Control', 'no-store');
+          try { res.end(JSON.stringify(searchEvidence(ghanaScraper, Object.fromEntries(new URL(url, 'http://localhost').searchParams)))); }
+          catch (error) { res.statusCode = error instanceof SearchInputError ? 400 : 500; res.end(JSON.stringify({error:error.message})); }
+          return;
+        }
+
 
         if (url.split('?')[0] === '/api/v1/public-figures/coverage') {
           res.setHeader('Content-Type', 'application/json');
